@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "calendar": {
+      "command": "node",
+      "args": ["/path/to/gcp/packages/calendar-mcp/dist/index.js"],
+      "env": {
+        "GOOGLE_CLIENT_ID": "your-client-id.apps.googleusercontent.com",
+        "GOOGLE_CLIENT_SECRET": "your-client-secret",
+        "ENABLED_TOOLS": "list_events,get_event,find_free_time,create_event,delete_event"
+      }
+    }
+  }
+}
