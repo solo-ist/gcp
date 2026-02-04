@@ -141,7 +141,7 @@ export async function createServer(): Promise<{ server: Server; transport: Stdio
     },
     {
       name: 'auth_complete',
-      description: 'Complete OAuth flow by providing the authorization code from Google.',
+      description: 'Complete OAuth flow after user has authorized in browser. The code is captured automatically by the callback server.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -151,10 +151,10 @@ export async function createServer(): Promise<{ server: Server; transport: Stdio
           },
           code: {
             type: 'string',
-            description: 'The authorization code from Google',
+            description: 'Optional: authorization code (only needed if callback failed)',
           },
         },
-        required: ['accountId', 'code'],
+        required: ['accountId'],
       },
     },
     {
@@ -194,12 +194,14 @@ export async function createServer(): Promise<{ server: Server; transport: Stdio
       const { accountId } = args as { accountId: string };
       const authUrl = await tokenManager.addAccount(accountId);
       return textResponse(
-        `Visit this URL to authorize access:\n\n${authUrl}\n\nAfter authorizing, copy the code and call auth_complete with it.`
+        `**Open this link to authorize:**\n\n${authUrl}\n\n` +
+        `After you approve access, the browser will show "Authorization Successful". ` +
+        `Then call \`auth_complete\` with accountId "${accountId}" (no code needed - it's captured automatically).`
       );
     }
 
     if (name === 'auth_complete') {
-      const { accountId, code } = args as { accountId: string; code: string };
+      const { accountId, code } = args as { accountId: string; code?: string };
       try {
         const account = await tokenManager.completeAuth(accountId, code);
         return textResponse(
