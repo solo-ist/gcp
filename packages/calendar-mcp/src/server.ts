@@ -5,7 +5,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { createTokenManager, type TokenManager, type Account } from '@solo-ist/auth';
+import { createTokenManager, type TokenManager, type Account, validateAccountId } from '@solo-ist/auth';
 import { CalendarClient } from './calendar/client.js';
 import {
   listEventsSchema,
@@ -37,6 +37,7 @@ const READ_WRITE_SCOPES = [
 
 const READ_ONLY_TOOLS = ['list_events', 'get_event', 'find_free_time'];
 const WRITE_TOOLS = ['create_event', 'delete_event'];
+const ALL_CALENDAR_TOOLS = new Set([...READ_ONLY_TOOLS, ...WRITE_TOOLS]);
 
 interface ToolDefinition {
   name: string;
@@ -47,7 +48,20 @@ interface ToolDefinition {
 function getEnabledTools(): Set<string> {
   const envTools = process.env.ENABLED_TOOLS;
   if (envTools) {
-    return new Set(envTools.split(',').map(t => t.trim()));
+    const requestedTools = envTools.split(',').map(t => t.trim()).filter(t => t.length > 0);
+    const validTools = new Set<string>();
+    for (const tool of requestedTools) {
+      if (ALL_CALENDAR_TOOLS.has(tool)) {
+        validTools.add(tool);
+      } else {
+        console.warn(`Unknown tool in ENABLED_TOOLS: "${tool}" (valid tools: ${[...ALL_CALENDAR_TOOLS].join(', ')})`);
+      }
+    }
+    if (validTools.size === 0) {
+      console.warn('No valid tools in ENABLED_TOOLS, falling back to read-only tools');
+      return new Set(READ_ONLY_TOOLS);
+    }
+    return validTools;
   }
   // Default to read-only tools
   return new Set(READ_ONLY_TOOLS);
@@ -219,7 +233,7 @@ export async function createServer(): Promise<{ server: Server; transport: Stdio
       return errorResponse(`Tool "${name}" is not enabled. Set ENABLED_TOOLS env var to enable it.`);
     }
 
-    // Get default account for calendar operations
+    // Get account for calendar operations
     const accounts = await tokenManager.listAccounts();
     if (accounts.length === 0) {
       return errorResponse(
@@ -227,34 +241,77 @@ export async function createServer(): Promise<{ server: Server; transport: Stdio
       );
     }
 
-    const accountId = accounts[0].id;
-    const authClient = await tokenManager.getAuthenticatedClient(accountId);
-    const calendarClient = new CalendarClient(authClient);
+    // Helper to resolve accountId from args or default to first account
+    const resolveAccountId = (requestedAccountId?: string): string => {
+      if (requestedAccountId) {
+        // Validate and check if account exists
+        validateAccountId(requestedAccountId);
+        const exists = accounts.some(a => a.id === requestedAccountId);
+        if (!exists) {
+          throw new Error(`Account "${requestedAccountId}" not found. Use auth_list_accounts to see available accounts.`);
+        }
+        return requestedAccountId;
+      }
+      // Default to first account only if there's exactly one account
+      if (accounts.length === 1) {
+        return accounts[0].id;
+      }
+      // Multiple accounts, require explicit selection
+      throw new Error(
+        `Multiple accounts configured. Please specify accountId. Available: ${accounts.map(a => a.id).join(', ')}`
+      );
+    };
 
     // Handle calendar tools
-    switch (name) {
-      case 'list_events': {
-        const input = listEventsSchema.parse(args);
-        return listEvents(calendarClient, input);
+    try {
+      switch (name) {
+        case 'list_events': {
+          const input = listEventsSchema.parse(args);
+          const accountId = resolveAccountId(input.accountId);
+          const authClient = await tokenManager.getAuthenticatedClient(accountId);
+          const calendarClient = new CalendarClient(authClient);
+          return listEvents(calendarClient, input);
+        }
+        case 'get_event': {
+          const input = getEventSchema.parse(args);
+          const accountId = resolveAccountId(input.accountId);
+          const authClient = await tokenManager.getAuthenticatedClient(accountId);
+          const calendarClient = new CalendarClient(authClient);
+          return getEvent(calendarClient, input);
+        }
+        case 'create_event': {
+          const input = createEventSchema.parse(args);
+          const accountId = resolveAccountId(input.accountId);
+          const authClient = await tokenManager.getAuthenticatedClient(accountId);
+          const calendarClient = new CalendarClient(authClient);
+          return createEvent(calendarClient, input);
+        }
+        case 'delete_event': {
+          const input = deleteEventSchema.parse(args);
+          const accountId = resolveAccountId(input.accountId);
+          const authClient = await tokenManager.getAuthenticatedClient(accountId);
+          const calendarClient = new CalendarClient(authClient);
+          return deleteEvent(calendarClient, input);
+        }
+        case 'find_free_time': {
+          const input = findFreeTimeSchema.parse(args);
+          const accountId = resolveAccountId(input.accountId);
+          const authClient = await tokenManager.getAuthenticatedClient(accountId);
+          const calendarClient = new CalendarClient(authClient);
+          return findFreeTime(calendarClient, input);
+        }
+        default:
+          return errorResponse(`Unknown tool: ${name}`);
       }
-      case 'get_event': {
-        const input = getEventSchema.parse(args);
-        return getEvent(calendarClient, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      // Check for validation errors vs operational errors
+      if (message.includes('Account') || message.includes('accountId')) {
+        return errorResponse(message);
       }
-      case 'create_event': {
-        const input = createEventSchema.parse(args);
-        return createEvent(calendarClient, input);
-      }
-      case 'delete_event': {
-        const input = deleteEventSchema.parse(args);
-        return deleteEvent(calendarClient, input);
-      }
-      case 'find_free_time': {
-        const input = findFreeTimeSchema.parse(args);
-        return findFreeTime(calendarClient, input);
-      }
-      default:
-        return errorResponse(`Unknown tool: ${name}`);
+      // Log full error for debugging, return generic message
+      console.error('Calendar operation failed:', error);
+      return errorResponse('Calendar operation failed. Please try again.');
     }
   });
 

@@ -22,7 +22,7 @@ export async function getEvent(client: CalendarClient, input: GetEventInput) {
       updated: event.updated,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return errorResponse(`Failed to get event: ${message}`);
+    console.error('Failed to get event:', error);
+    return errorResponse('Failed to get event. Please check the calendar ID and event ID.');
   }
 }

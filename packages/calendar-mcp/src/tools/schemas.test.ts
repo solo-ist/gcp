@@ -45,6 +45,53 @@ describe('listEventsSchema', () => {
       })
     ).toThrow();
   });
+
+  it('should reject invalid datetime format', () => {
+    expect(() =>
+      listEventsSchema.parse({
+        timeMin: 'not-a-date',
+        timeMax: '2024-01-31T23:59:59Z',
+      })
+    ).toThrow();
+  });
+
+  it('should accept optional accountId', () => {
+    const result = listEventsSchema.parse({
+      accountId: 'work',
+      timeMin: '2024-01-01T00:00:00Z',
+      timeMax: '2024-01-31T23:59:59Z',
+    });
+    expect(result.accountId).toBe('work');
+  });
+
+  it('should reject invalid accountId format', () => {
+    expect(() =>
+      listEventsSchema.parse({
+        accountId: 'user@example.com', // @ not allowed
+        timeMin: '2024-01-01T00:00:00Z',
+        timeMax: '2024-01-31T23:59:59Z',
+      })
+    ).toThrow();
+  });
+});
+
+describe('getEventSchema', () => {
+  it('should reject overly long eventId', () => {
+    expect(() =>
+      getEventSchema.parse({
+        eventId: 'x'.repeat(300),
+      })
+    ).toThrow();
+  });
+
+  it('should reject overly long calendarId', () => {
+    expect(() =>
+      getEventSchema.parse({
+        calendarId: 'x'.repeat(300),
+        eventId: 'abc123',
+      })
+    ).toThrow();
+  });
 });
 
 describe('createEventSchema', () => {
@@ -78,6 +125,28 @@ describe('createEventSchema', () => {
       })
     ).toThrow();
   });
+
+  it('should reject too many attendees', () => {
+    const tooManyAttendees = Array(101).fill('user@example.com');
+    expect(() =>
+      createEventSchema.parse({
+        summary: 'Team Meeting',
+        startDateTime: '2024-01-15T10:00:00-05:00',
+        endDateTime: '2024-01-15T11:00:00-05:00',
+        attendees: tooManyAttendees,
+      })
+    ).toThrow();
+  });
+
+  it('should reject invalid datetime format', () => {
+    expect(() =>
+      createEventSchema.parse({
+        summary: 'Team Meeting',
+        startDateTime: 'tomorrow at 10am', // Invalid ISO 8601
+        endDateTime: '2024-01-15T11:00:00-05:00',
+      })
+    ).toThrow();
+  });
 });
 
 describe('findFreeTimeSchema', () => {
@@ -98,5 +167,16 @@ describe('findFreeTimeSchema', () => {
       calendarIds: ['primary', 'work@example.com'],
     });
     expect(result.calendarIds).toHaveLength(2);
+  });
+
+  it('should reject too many calendars', () => {
+    const tooManyCalendars = Array(51).fill('calendar@example.com');
+    expect(() =>
+      findFreeTimeSchema.parse({
+        timeMin: '2024-01-01T00:00:00Z',
+        timeMax: '2024-01-31T23:59:59Z',
+        calendarIds: tooManyCalendars,
+      })
+    ).toThrow();
   });
 });

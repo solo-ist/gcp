@@ -5,9 +5,9 @@ import { textResponse, errorResponse } from '../utils/response.js';
 export async function deleteEvent(client: CalendarClient, input: DeleteEventInput) {
   try {
     await client.deleteEvent(input.calendarId, input.eventId);
-    return textResponse(`Event ${input.eventId} deleted successfully`);
+    return textResponse('Event deleted successfully');
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return errorResponse(`Failed to delete event: ${message}`);
+    console.error('Failed to delete event:', error);
+    return errorResponse('Failed to delete event. Please check the calendar ID and event ID.');
   }
 }

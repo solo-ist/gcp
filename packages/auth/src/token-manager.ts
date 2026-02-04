@@ -22,6 +22,24 @@ import {
   REDIRECT_URI,
   TOKEN_REFRESH_BUFFER_MS,
 } from './constants.js';
+import { validateAccountId } from './validation.js';
+
+// Maximum number of concurrent pending auth flows
+const MAX_PENDING_AUTHS = 10;
+// Timeout for OAuth callback server (2 minutes)
+const AUTH_TIMEOUT_MS = 2 * 60 * 1000;
+
+/**
+ * Escape HTML special characters to prevent XSS
+ */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 class TokenManagerImpl implements TokenManager {
   private readonly oauth2Client: OAuth2Client;
@@ -30,7 +48,7 @@ class TokenManagerImpl implements TokenManager {
   private readonly scopes: string[];
   private readonly clientId: string;
   private readonly clientSecret: string;
-  private pendingAuths: Map<string, { client: OAuth2Client; server?: HttpServer; code?: string }> = new Map();
+  private pendingAuths: Map<string, { client: OAuth2Client; server?: HttpServer; code?: string; timeout?: NodeJS.Timeout }> = new Map();
 
   constructor(config: AuthConfig, credentials: { clientId: string; clientSecret: string }) {
     this.configDir = config.configDir ?? DEFAULT_CONFIG_DIR;
@@ -65,10 +83,18 @@ class TokenManagerImpl implements TokenManager {
   }
 
   async addAccount(accountId: string): Promise<string> {
+    validateAccountId(accountId);
+
+    // Limit number of pending auth flows to prevent resource exhaustion
+    if (this.pendingAuths.size >= MAX_PENDING_AUTHS && !this.pendingAuths.has(accountId)) {
+      throw new Error('Too many pending authorization flows. Please complete or cancel existing flows first.');
+    }
+
     // Clean up any existing pending auth for this account
     const existing = this.pendingAuths.get(accountId);
-    if (existing?.server) {
-      existing.server.close();
+    if (existing) {
+      if (existing.timeout) clearTimeout(existing.timeout);
+      if (existing.server) existing.server.close();
     }
 
     // Start local callback server
@@ -79,7 +105,7 @@ class TokenManagerImpl implements TokenManager {
 
       if (error) {
         res.writeHead(400, { 'Content-Type': 'text/html' });
-        res.end(`<html><body><h1>Authorization Failed</h1><p>${error}</p></body></html>`);
+        res.end(`<html><body><h1>Authorization Failed</h1><p>${escapeHtml(error)}</p></body></html>`);
       } else if (code) {
         const pending = this.pendingAuths.get(accountId);
         if (pending) {
@@ -109,14 +135,31 @@ class TokenManagerImpl implements TokenManager {
       prompt: 'consent',
     });
 
-    this.pendingAuths.set(accountId, { client, server });
+    // Set up timeout to clean up stale auth flows
+    const timeout = setTimeout(() => {
+      const pending = this.pendingAuths.get(accountId);
+      if (pending?.server) {
+        pending.server.close();
+      }
+      this.pendingAuths.delete(accountId);
+    }, AUTH_TIMEOUT_MS);
+
+    this.pendingAuths.set(accountId, { client, server, timeout });
     return authUrl;
   }
 
   async completeAuth(accountId: string, code?: string): Promise<Account> {
+    validateAccountId(accountId);
+
     const pending = this.pendingAuths.get(accountId);
     if (!pending) {
-      throw new Error(`No pending auth for account: ${accountId}`);
+      throw new Error('No pending authorization for this account');
+    }
+
+    // Clear the timeout
+    if (pending.timeout) {
+      clearTimeout(pending.timeout);
+      pending.timeout = undefined;
     }
 
     // Use provided code or code from callback server
@@ -196,6 +239,7 @@ class TokenManagerImpl implements TokenManager {
   }
 
   async removeAccount(accountId: string): Promise<void> {
+    validateAccountId(accountId);
     await this.storage.remove(accountId);
 
     const accountsFile = await this.readAccountsFile();
@@ -217,9 +261,11 @@ class TokenManagerImpl implements TokenManager {
   }
 
   async getAccessToken(accountId: string): Promise<string> {
+    validateAccountId(accountId);
+
     const tokens = await this.storage.retrieve(accountId);
     if (!tokens) {
-      throw new Error(`No tokens found for account: ${accountId}`);
+      throw new Error('No tokens found for this account');
     }
 
     // Check if token needs refresh (5 min buffer)
@@ -252,9 +298,11 @@ class TokenManagerImpl implements TokenManager {
   }
 
   async getAuthenticatedClient(accountId: string): Promise<OAuth2Client> {
+    validateAccountId(accountId);
+
     const tokens = await this.storage.retrieve(accountId);
     if (!tokens) {
-      throw new Error(`No tokens found for account: ${accountId}`);
+      throw new Error('No tokens found for this account');
     }
 
     const client = new google.auth.OAuth2(
@@ -284,9 +332,8 @@ class TokenManagerImpl implements TokenManager {
 
   async close(): Promise<void> {
     for (const pending of this.pendingAuths.values()) {
-      if (pending.server) {
-        pending.server.close();
-      }
+      if (pending.timeout) clearTimeout(pending.timeout);
+      if (pending.server) pending.server.close();
     }
     this.pendingAuths.clear();
   }
@@ -318,11 +365,11 @@ async function loadCredentials(config: AuthConfig): Promise<{ clientId: string; 
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new Error(
-        `Credentials not found. Either set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars, ` +
-        `or place credentials.json at ${credentialsPath}`
+        'Credentials not found. Either set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET env vars, ' +
+        'or place credentials.json in the config directory (~/.gcp by default)'
       );
     }
-    throw error;
+    throw new Error('Failed to load credentials file');
   }
 }
 

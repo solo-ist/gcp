@@ -23,7 +23,7 @@ export async function findFreeTime(client: CalendarClient, input: FindFreeTimeIn
       })),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return errorResponse(`Failed to query free/busy: ${message}`);
+    console.error('Failed to query free/busy:', error);
+    return errorResponse('Failed to query free/busy information. Please check the calendar IDs and time range.');
   }
 }

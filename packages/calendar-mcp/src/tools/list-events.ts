@@ -29,7 +29,7 @@ export async function listEvents(client: CalendarClient, input: ListEventsInput)
       count: result.events.length,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return errorResponse(`Failed to list events: ${message}`);
+    console.error('Failed to list events:', error);
+    return errorResponse('Failed to list events. Please check the calendar ID and time range.');
   }
 }

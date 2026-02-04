@@ -29,7 +29,7 @@ export async function createEvent(client: CalendarClient, input: CreateEventInpu
       status: event.status,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return errorResponse(`Failed to create event: ${message}`);
+    console.error('Failed to create event:', error);
+    return errorResponse('Failed to create event. Please check the event details and try again.');
   }
 }

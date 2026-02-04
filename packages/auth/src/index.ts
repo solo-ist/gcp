@@ -17,3 +17,4 @@ export {
   CREDENTIALS_FILE,
   KEYCHAIN_SERVICE,
 } from './constants.js';
+export { validateAccountId, isValidAccountId } from './validation.js';

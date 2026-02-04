@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { TokenStorage, StoredTokens } from '../types.js';
 import { KEYCHAIN_SERVICE } from '../constants.js';
+import { validateAccountId } from '../validation.js';
 
 function execWithInput(command: string, args: string[], input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -30,6 +31,7 @@ function execWithInput(command: string, args: string[], input?: string): Promise
 
 export class LinuxKeychainStorage implements TokenStorage {
   async store(accountId: string, tokens: StoredTokens): Promise<void> {
+    validateAccountId(accountId);
     const password = JSON.stringify(tokens);
     await execWithInput('secret-tool', [
       'store',
@@ -40,6 +42,7 @@ export class LinuxKeychainStorage implements TokenStorage {
   }
 
   async retrieve(accountId: string): Promise<StoredTokens | null> {
+    validateAccountId(accountId);
     try {
       const stdout = await execWithInput('secret-tool', [
         'lookup',
@@ -53,6 +56,7 @@ export class LinuxKeychainStorage implements TokenStorage {
   }
 
   async remove(accountId: string): Promise<void> {
+    validateAccountId(accountId);
     try {
       await execWithInput('secret-tool', [
         'clear',

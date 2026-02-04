@@ -1,6 +1,7 @@
-import { readFile, writeFile, unlink, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, unlink, mkdir, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { TokenStorage, StoredTokens } from '../types.js';
+import { validateAccountId } from '../validation.js';
 
 export class PlaintextStorage implements TokenStorage {
   private readonly tokensDir: string;
@@ -14,11 +15,16 @@ export class PlaintextStorage implements TokenStorage {
   }
 
   async store(accountId: string, tokens: StoredTokens): Promise<void> {
-    await mkdir(this.tokensDir, { recursive: true });
-    await writeFile(this.tokenPath(accountId), JSON.stringify(tokens), 'utf-8');
+    validateAccountId(accountId);
+    await mkdir(this.tokensDir, { recursive: true, mode: 0o700 });
+    const tokenPath = this.tokenPath(accountId);
+    await writeFile(tokenPath, JSON.stringify(tokens), { encoding: 'utf-8', mode: 0o600 });
+    // Ensure permissions are set correctly even if file existed
+    await chmod(tokenPath, 0o600);
   }
 
   async retrieve(accountId: string): Promise<StoredTokens | null> {
+    validateAccountId(accountId);
     try {
       const data = await readFile(this.tokenPath(accountId), 'utf-8');
       return JSON.parse(data) as StoredTokens;
@@ -28,6 +34,7 @@ export class PlaintextStorage implements TokenStorage {
   }
 
   async remove(accountId: string): Promise<void> {
+    validateAccountId(accountId);
     try {
       await unlink(this.tokenPath(accountId));
     } catch {
