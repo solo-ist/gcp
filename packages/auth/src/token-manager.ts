@@ -48,7 +48,9 @@ class TokenManagerImpl implements TokenManager {
   private readonly scopes: string[];
   private readonly clientId: string;
   private readonly clientSecret: string;
-  private pendingAuths: Map<string, { client: OAuth2Client; server?: HttpServer; code?: string; timeout?: NodeJS.Timeout }> = new Map();
+  private pendingAuths: Map<string, { client: OAuth2Client; code?: string; timeout?: NodeJS.Timeout }> = new Map();
+  private callbackServer: HttpServer | null = null;
+  private serverRefCount = 0;
 
   constructor(config: AuthConfig, credentials: { clientId: string; clientSecret: string }) {
     this.configDir = config.configDir ?? DEFAULT_CONFIG_DIR;
@@ -82,6 +84,66 @@ class TokenManagerImpl implements TokenManager {
     await writeFile(this.accountsPath(), JSON.stringify(file, null, 2), 'utf-8');
   }
 
+  private async ensureCallbackServer(): Promise<void> {
+    if (this.callbackServer) {
+      this.serverRefCount++;
+      return;
+    }
+
+    this.callbackServer = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', `http://127.0.0.1:3000`);
+      const code = url.searchParams.get('code');
+      const error = url.searchParams.get('error');
+      const state = url.searchParams.get('state'); // accountId is passed as state
+
+      if (error) {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end(`<html><body><h1>Authorization Failed</h1><p>${escapeHtml(error)}</p></body></html>`);
+        return;
+      }
+
+      if (!state) {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end(`<html><body><h1>Invalid Request</h1><p>Missing state parameter</p></body></html>`);
+        return;
+      }
+
+      if (code) {
+        const pending = this.pendingAuths.get(state);
+        if (pending) {
+          pending.code = code;
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`<html><body><h1>Authorization Successful</h1><p>You can close this window and return to Claude.</p></body></html>`);
+        } else {
+          res.writeHead(400, { 'Content-Type': 'text/html' });
+          res.end(`<html><body><h1>Authorization Expired</h1><p>Please start the authorization process again.</p></body></html>`);
+        }
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(`<html><body><h1>Waiting for authorization...</h1></body></html>`);
+      }
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      this.callbackServer!.once('error', reject);
+      this.callbackServer!.listen(3000, '127.0.0.1', () => {
+        this.callbackServer!.removeListener('error', reject);
+        resolve();
+      });
+    });
+
+    this.serverRefCount = 1;
+  }
+
+  private releaseCallbackServer(): void {
+    this.serverRefCount--;
+    if (this.serverRefCount <= 0 && this.callbackServer) {
+      this.callbackServer.close();
+      this.callbackServer = null;
+      this.serverRefCount = 0;
+    }
+  }
+
   async addAccount(accountId: string): Promise<string> {
     validateAccountId(accountId);
 
@@ -94,34 +156,12 @@ class TokenManagerImpl implements TokenManager {
     const existing = this.pendingAuths.get(accountId);
     if (existing) {
       if (existing.timeout) clearTimeout(existing.timeout);
-      if (existing.server) existing.server.close();
+      this.releaseCallbackServer();
+      this.pendingAuths.delete(accountId);
     }
 
-    // Start local callback server
-    const server = createServer((req, res) => {
-      const url = new URL(req.url ?? '/', `http://127.0.0.1:3000`);
-      const code = url.searchParams.get('code');
-      const error = url.searchParams.get('error');
-
-      if (error) {
-        res.writeHead(400, { 'Content-Type': 'text/html' });
-        res.end(`<html><body><h1>Authorization Failed</h1><p>${escapeHtml(error)}</p></body></html>`);
-      } else if (code) {
-        const pending = this.pendingAuths.get(accountId);
-        if (pending) {
-          pending.code = code;
-        }
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(`<html><body><h1>Authorization Successful</h1><p>You can close this window.</p></body></html>`);
-      } else {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(`<html><body><h1>Waiting for authorization...</h1></body></html>`);
-      }
-    });
-
-    await new Promise<void>((resolve) => {
-      server.listen(3000, '127.0.0.1', () => resolve());
-    });
+    // Ensure callback server is running
+    await this.ensureCallbackServer();
 
     const client = new google.auth.OAuth2(
       this.clientId,
@@ -133,18 +173,16 @@ class TokenManagerImpl implements TokenManager {
       access_type: 'offline',
       scope: this.scopes,
       prompt: 'consent',
+      state: accountId, // Pass accountId as state to identify callback
     });
 
     // Set up timeout to clean up stale auth flows
     const timeout = setTimeout(() => {
-      const pending = this.pendingAuths.get(accountId);
-      if (pending?.server) {
-        pending.server.close();
-      }
       this.pendingAuths.delete(accountId);
+      this.releaseCallbackServer();
     }, AUTH_TIMEOUT_MS);
 
-    this.pendingAuths.set(accountId, { client, server, timeout });
+    this.pendingAuths.set(accountId, { client, timeout });
     return authUrl;
   }
 
@@ -171,11 +209,8 @@ class TokenManagerImpl implements TokenManager {
     // Clear the code so it can't be reused
     pending.code = undefined;
 
-    // Shut down callback server
-    if (pending.server) {
-      pending.server.close();
-      pending.server = undefined;
-    }
+    // Release our reference to the callback server
+    this.releaseCallbackServer();
 
     let tokens;
     try {
@@ -333,9 +368,13 @@ class TokenManagerImpl implements TokenManager {
   async close(): Promise<void> {
     for (const pending of this.pendingAuths.values()) {
       if (pending.timeout) clearTimeout(pending.timeout);
-      if (pending.server) pending.server.close();
     }
     this.pendingAuths.clear();
+    if (this.callbackServer) {
+      this.callbackServer.close();
+      this.callbackServer = null;
+      this.serverRefCount = 0;
+    }
   }
 }
 
