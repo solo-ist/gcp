@@ -2,8 +2,8 @@ FROM node:22-slim
 
 WORKDIR /app
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Install pnpm (pin to 8.x for lockfile compatibility)
+RUN corepack enable && corepack prepare pnpm@8 --activate
 
 # Copy package files
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
