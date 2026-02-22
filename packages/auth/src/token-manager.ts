@@ -126,7 +126,8 @@ class TokenManagerImpl implements TokenManager {
 
     await new Promise<void>((resolve, reject) => {
       this.callbackServer!.once('error', reject);
-      this.callbackServer!.listen(3000, '127.0.0.1', () => {
+      const bindAddress = process.env.GCP_PLAINTEXT_STORAGE === 'true' ? '0.0.0.0' : '127.0.0.1';
+      this.callbackServer!.listen(3000, bindAddress, () => {
         this.callbackServer!.removeListener('error', reject);
         resolve();
       });
